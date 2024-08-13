@@ -15,7 +15,7 @@ def parse_arguments():
                         help='Model name')
     parser.add_argument('--gpu_id', type=int, default=0,
                         help='GPU')
-    parser.add_argument('--dataset', type=str, default='amazon_books', choices=['amazon_books', 'steam', 'yelp'],
+    parser.add_argument('--dataset', type=str, default='amazon_books', choices=['amazon_books', 'steam', 'yelp', 'lastfm'],
                         help='Dataset name')
     parser.add_argument('--seed', type=int, default=60,
                         help='seed')
@@ -68,7 +68,7 @@ def parse_arguments():
     #                     help='Active to perform attention feature fusion')
     parser.add_argument('--mode',
                     default='full',
-                    choices=['full', 'woatt', 'wossl', 'wohyper', 'woglobal'],
+                    choices=['full', 'woatt', 'wossl', 'wohyper', 'woglobal', 'local_only', 'group_only'],
                     help='Mode')
     parser.add_argument('--aug_type', type=int, default=1,
                         help='Aug type')
@@ -97,7 +97,7 @@ def parse_arguments():
 if __name__ == '__main__':
     # Register your model here
     graph_baselines = ['LightGCN','DirectAU','MF','SASRec', 'KGAT', 'HGCN', 'KHGRec', 'DHCF', 'HCCF_diffusion', 'DHCF_diffusion', 
-    'KHGRec_variation1', 'KHGRec_variation2', 'KHGRec_variation3', 'KHGRec_variation4', 'KHGRec_variation5', 'KHGRec_variation6', 'KHGRec_variation7', 'KHGRec_variation8', 'KHGRec_variation9', 'WaveletHD', 'WaveletHD2', 'HGNN_HD', 'HD', 'HD2', 'HGNN_HD2', 'LocalEncoder', 'AutoCF', 'LRMRec']
+    'KHGRec_variation1', 'KHGRec_variation2', 'KHGRec_variation3', 'KHGRec_variation4', 'KHGRec_variation5', 'KHGRec_variation6', 'KHGRec_variation7', 'KHGRec_variation8', 'KHGRec_variation9', 'WaveletHD', 'WaveletHD2', 'HGNN_HD', 'HD', 'HD2', 'HGNN_HD2', 'LocalEncoder', 'AutoCF', 'LRMRec', 'HGNN_HD3']
     ssl_graph_models = ['SGL', 'SimGCL', 'SEPT', 'MHCN', 'BUIR', 'SelfCF', 'SSL4Rec', 'XSimGCL', 'NCL',\
                         'MixGCF', 'HKGRippleNet', 'HGNN', 'HGNNAblation', 'HCCF', 'SHT']
     sequential_baselines= ['SASRec']
