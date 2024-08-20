@@ -30,7 +30,7 @@ import sys
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 #print(torch.cuda.is_available())
 class EquivSetGNN(nn.Module):
-    def __init__(self, num_features, args, dense_hypergraph, data):
+    def __init__(self, num_features, args, dense_hypergraph, data, ncount, mcount):
         """UniGNNII
 
         Args:
@@ -62,7 +62,7 @@ class EquivSetGNN(nn.Module):
 
         self.lin_in = torch.nn.Linear(num_features, args['MLP_hidden'])
         
-        self.conv = EquivSetConv.EquivSetConv(args['MLP_hidden'], args['MLP_hidden'], mlp1_layers=self.mlp1_layers, mlp2_layers=self.mlp2_layers,
+        self.conv = EquivSetConv.EquivSetConv(args['MLP_hidden'], args['MLP_hidden'], ncount, mcount, mlp1_layers=self.mlp1_layers, mlp2_layers=self.mlp2_layers,
             mlp3_layers=self.mlp3_layers, alpha=args['restart_alpha'], aggr=args['aggregate'],
             dropout=args['dropout'], normalization=args['normalization'], input_norm=args['AllSet_input_norm'], hypergraph=dense_hypergraph, data=self.data)
         
@@ -80,10 +80,10 @@ class EquivSetGNN(nn.Module):
         
         #self.classifier.reset_parameters()
 
-    def forward(self, x, hypergraph, n_nodes):
+    def forward(self, x, sparse_norm_adj, n_nodes, act=True):
         '''my code'''
         # build bipartite graphs for user and item(star expension)
-        #V, E = self.generate_V_E(n_nodes, hypergraph)
+        #V, E = self.generate_V_E(n_nodes, sparse_norm_adj)
         '''---'''
         lamda, alpha = 0.5, 0.1
         x = self.dropout(x)
@@ -94,7 +94,8 @@ class EquivSetGNN(nn.Module):
             x = self.dropout(x)
             #x = self.conv(x, V, E, x0)
             #logging.debug("conv layer...")
-            x = self.conv(x, hypergraph, x0)
+            #x = self.conv(x, V, E, sparse_norm_adj, x0, act)
+            x = self.conv(x, sparse_norm_adj, x0, act)
             x = self.act(x)
         x = self.dropout(x)
         return x
@@ -104,6 +105,7 @@ class EquivSetGNN(nn.Module):
         
         new_connections = self.build_new_hypergraph(hypergraph)
 
+        hypergraph = hypergraph.to_dense()
         non_zero_indices = torch.nonzero(hypergraph > 0)
         n_connections = non_zero_indices.size(0)
         
@@ -120,6 +122,7 @@ class EquivSetGNN(nn.Module):
 
     def build_new_hypergraph(self, hypergraph):
 
+        hypergraph = hypergraph.to_dense()
         vertex_n = hypergraph.shape[0]
         edge_n = hypergraph.shape[1]
 

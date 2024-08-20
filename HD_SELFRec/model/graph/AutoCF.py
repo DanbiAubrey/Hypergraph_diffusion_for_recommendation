@@ -13,9 +13,10 @@ from util.evaluation import early_stopping
 import torch.nn.functional as F
 
 '''
-python main.py --model=AutoCF --dataset=lastfm  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
+python main.py --model=AutoCF --dataset=lastfm  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
+python main.py --model=AutoCF --dataset=ml-1m  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
 python main.py --model=AutoCF --dataset=amazon_books  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.001 --early_stopping_steps=20 --seed=20
-python main.py --model=AutoCF --dataset=steam  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
+python main.py --model=AutoCF --dataset=steam  --lrate=0.001 --weight_decay=0 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
 python main.py --model=AutoCF --dataset=yelp  --lrate=0.001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
 '''
 # paper: LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation. SIGIR'20\

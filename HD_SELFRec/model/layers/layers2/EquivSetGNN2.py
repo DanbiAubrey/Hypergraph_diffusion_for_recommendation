@@ -86,73 +86,71 @@ class EquivSetGNN(nn.Module):
         
         '''my code'''
         # build bipartite graphs for user and item(star expension)
-        #V, E = self.generate_V_E(n_nodes, hypergraph)
+        V, E = self.generate_V_E(n_nodes, hypergraph)
         '''---'''
         lamda, alpha = 0.5, 0.1
         x = self.dropout(x)
         x = F.relu(self.lin_in(x))
         x0 = x
         for i in range(self.nlayer):
-            #logging.critical("propagating through edhnn layers...")
             x = self.dropout(x)
-            #x = self.conv(x, V, E, x0)
-            #logging.critical("conv layer...")
-            x = self.conv(x, hypergraph, x0)
+            x = self.conv(x, V, E, x0)
+            #x = self.conv(x, hypergraph, x0)
             x = self.act(x)
         x = self.dropout(x)
         #x = self.classifier(x)
         return x
 
     # '''my_code'''
-    # def generate_V_E(self, n_nodes, hypergraph):
+    def generate_V_E(self, n_nodes, hypergraph):
         
-    #     new_connections = self.build_new_hypergraph(hypergraph)
+        new_connections = self.build_new_hypergraph(hypergraph)
 
-    #     non_zero_indices = torch.nonzero(hypergraph > 0)
-    #     n_connections = non_zero_indices.size(0)
+        non_zero_indices = torch.nonzero(hypergraph > 0)
+        n_connections = non_zero_indices.size(0)
         
-    #     vertex_n = hypergraph.shape[0]
-    #     edge_n = hypergraph.shape[1]
+        vertex_n = hypergraph.shape[0]
+        edge_n = hypergraph.shape[1]
 
-    #     V = torch.zeros(n_connections, dtype=torch.long)# [120938]
-    #     E = torch.zeros(n_connections, dtype=torch.long)# [120938]
+        V = torch.zeros(n_connections, dtype=torch.long)# [120938]
+        E = torch.zeros(n_connections, dtype=torch.long)# [120938]
         
-    #     V = non_zero_indices[:, 0].to(device)
-    #     E = non_zero_indices[:, 1].to(device)
+        V = non_zero_indices[:, 0].to(device)
+        E = non_zero_indices[:, 1].to(device)
         
-    #     # print(V.device)
-    #     # print(E.device)
+        # print(V.device)
+        # print(E.device)
         
-    #     # idx = 0
-    #     # for n in range(hypergraph.size(0)):
-    #     #     for e in range(hypergraph.size(1)):
-    #     #         element = hypergraph[n,e]
-    #     #         if element > 0:
-    #     #             V[idx] = n
-    #     #             E[idx] = e + n_nodes
-    #     #             idx += 1
+        # idx = 0
+        # for n in range(hypergraph.size(0)):
+        #     for e in range(hypergraph.size(1)):
+        #         element = hypergraph[n,e]
+        #         if element > 0:
+        #             V[idx] = n
+        #             E[idx] = e + n_nodes
+        #             idx += 1
 
-    #     return V, E
+        return V, E
 
-    # def build_new_hypergraph(self, hypergraph):
+    def build_new_hypergraph(self, hypergraph):
 
-    #     vertex_n = hypergraph.shape[0]
-    #     edge_n = hypergraph.shape[1]
+        vertex_n = hypergraph.shape[0]
+        edge_n = hypergraph.shape[1]
 
-    #     list_vertices = torch.arange(vertex_n, dtype= torch.long)#16668
-    #     list_edges = torch.arange(edge_n, dtype = torch.long) + vertex_n
-    #     #tensor([16668, 16669, 16670,  ..., 33333, 33334, 33335])
+        list_vertices = torch.arange(vertex_n, dtype= torch.long)#16668
+        list_edges = torch.arange(edge_n, dtype = torch.long) + vertex_n
+        #tensor([16668, 16669, 16670,  ..., 33333, 33334, 33335])
 
-    #     new_n_vertex = vertex_n + edge_n
-    #     new_vertices = torch.cat((list_vertices,list_edges))
+        new_n_vertex = vertex_n + edge_n
+        new_vertices = torch.cat((list_vertices,list_edges))
        
-    #     #new E-> V connections
-    #     V_E_connections = torch.nonzero(hypergraph > 0)
-    #     E_V_connections = V_E_connections
-    #     E_V_connections = E_V_connections[:, [1, 0]]
-    #     E_V_connections[:,0] += vertex_n
+        #new E-> V connections
+        V_E_connections = torch.nonzero(hypergraph > 0)
+        E_V_connections = V_E_connections
+        E_V_connections = E_V_connections[:, [1, 0]]
+        E_V_connections[:,0] += vertex_n
        
-    #     new_connections = torch.cat((V_E_connections, E_V_connections), 0)
+        new_connections = torch.cat((V_E_connections, E_V_connections), 0)
         
-    #     return new_connections
+        return new_connections
         

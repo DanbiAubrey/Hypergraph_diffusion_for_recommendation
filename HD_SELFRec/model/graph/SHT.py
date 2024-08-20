@@ -18,6 +18,7 @@ from util.evaluation import early_stopping
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 '''
+- python main.py --model=SHT --dataset=lastfm  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.1 --cl_rate=1e-04 --temp=0.2 --reg=0 --early_stopping_steps=20 --seed=20
 - python main.py --model=SHT --dataset=ml-1m  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.1 --cl_rate=1e-04 --temp=0.2 --reg=0 --early_stopping_steps=20 --seed=20
 - python main.py --model=SHT --dataset=amazon_books  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.1 --cl_rate=1e-04 --temp=0.2 --reg=0 --early_stopping_steps=20 --seed=20
 - python main.py --model=SHT --dataset=steam  --lrate=0.001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.1 --cl_rate=1e-04 --temp=0.2 --reg=0 --early_stopping_steps=20 --seed=20

@@ -14,8 +14,8 @@ import torch.nn.functional as F
 import pickle
 
 '''
-python main.py --model=LRMRec --dataset=lastfm  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
-python main.py --model=LRMRec --dataset=amazon_books  --lrate=0.1 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.001 --early_stopping_steps=20 --seed=20
+python main.py --model=LRMRec --dataset=lastfm  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
+python main.py --model=LRMRec --dataset=amazon_books  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.001 --early_stopping_steps=20 --seed=20
 python main.py --model=LRMRec --dataset=steam  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
 python main.py --model=LRMRec --dataset=yelp  --lrate=0.001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
 '''
@@ -43,8 +43,8 @@ class LRMRec(GraphRecommender):
         self.recon_weight = float(self.config['recon_weight'])
         self.re_temperature = float(self.config['retemperature'])
 
-        usrprf_embeds_path = "./data/{}/usr_emb_np.pkl".format(self.config['dataset'])
-        itmprf_embeds_path = "./data/{}/itm_emb_np.pkl".format(self.config['dataset'])
+        usrprf_embeds_path = "./dataset/{}/usr_emb_np.pkl".format(self.config['dataset'])
+        itmprf_embeds_path = "./dataset/{}/itm_emb_np.pkl".format(self.config['dataset'])
 
         with open(usrprf_embeds_path, 'rb') as f:
             usrprf_embeds = pickle.load(f)
@@ -54,7 +54,7 @@ class LRMRec(GraphRecommender):
         self.usrprf_embeds = usrprf_embeds
         self.itmprf_embeds = itmprf_embeds
 
-        self.model = LRMRec_Encoder(self.data, self.emb_size, self.gt_layers, self.gcn_layers, self.head_num, self.seed_num, self.mask_depth, self.keep_rate, self.mask_ratio, self.recon_weight, self.re_temperature)
+        self.model = LRMRec_Encoder(self.data, self.emb_size, self.gt_layers, self.gcn_layers, self.head_num, self.seed_num, self.mask_depth, self.keep_rate, self.mask_ratio, self.recon_weight, self.re_temperature, self.usrprf_embeds, itmprf_embeds)
         self.encoderAdj, self.decoderAdj = None, None
 
     def train(self, load_pretrained):
@@ -81,14 +81,18 @@ class LRMRec(GraphRecommender):
                     sampScores, seeds = model.sample_subgraphs()
                     encoderAdj, decoderAdj = model.mask_subgraphs(seeds)
 
+                # cal_loss
+                masked_user_embeds, masked_item_embeds, seeds = model._mask()
+                rec_user_emb, rec_item_emb = model.forward(encoderAdj, decoderAdj, masked_user_embeds, masked_item_embeds)
                 user_idx, pos_idx, neg_idx = batch
-                rec_user_emb, rec_item_emb = model(encoderAdj, decoderAdj)
                 user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_idx], rec_item_emb[pos_idx], rec_item_emb[neg_idx]
 
                 rec_loss = (-torch.sum(user_emb * pos_item_emb, dim=-1)).mean()
                 reg_loss =  l2_reg_loss(self.reg, user_emb,pos_item_emb,neg_item_emb) /self.batch_size
                 cl_loss = (self.contrast(user_idx, rec_user_emb) + self.contrast(pos_idx, rec_item_emb)) * self.ssl_reg + self.contrast(user_idx, rec_user_emb, rec_item_emb)
-                batch_loss = rec_loss + reg_loss + cl_loss
+                recon_loss = self.recon_weight * model._reconstruction(torch.concat([rec_user_emb, rec_item_emb], axis=0), seeds)
+               
+                batch_loss = rec_loss + reg_loss + cl_loss + recon_loss
 
                 train_losses.append(batch_loss.item())
                 rec_losses.append(rec_loss.item())
@@ -177,7 +181,7 @@ class LRMRec_Encoder(nn.Module):
         self.keep_rate = keep_rate
         self.user_num = self.data.n_users
         self.item_num = self.data.n_items
-
+        self.init = nn.init.xavier_uniform_
         self.mask_ratio = mask_ratio
         self.recon_weight = recon_weight
         self.re_temperature = re_temperature
@@ -193,10 +197,25 @@ class LRMRec_Encoder(nn.Module):
         self.masker = RandomMaskSubgraphs(self.mask_depth, self.keep_rate, self.user_num, self.item_num)
         self.sampler = LocalGraph(self.seed_num)
 
+        # get semantic embeddings learned from profiles
         usrprf_embeds = torch.tensor(usrprf_embeds).float().cuda()
         itmprf_embeds = torch.tensor(itmprf_embeds).float().cuda()
         self.prf_embeds = torch.concat([usrprf_embeds, itmprf_embeds], dim=0)
 
+        # generative process
+        self.gene_masker = NodeMask(self.mask_ratio, self.latent_size)
+        self.mlp = nn.Sequential(
+            nn.Linear(self.latent_size, (self.prf_embeds.shape[1] + self.latent_size) // 2),
+            nn.LeakyReLU(),
+            nn.Linear((self.prf_embeds.shape[1] + self.latent_size) // 2, self.prf_embeds.shape[1])
+        )
+
+        self._init_weight()
+
+    def _init_weight(self):
+        for m in self.mlp:
+            if isinstance(m, nn.Linear):
+                self.init(m.weight)
 
     def _init_model(self):
         initializer = nn.init.xavier_uniform_
@@ -205,6 +224,11 @@ class LRMRec_Encoder(nn.Module):
             'item_emb': nn.Parameter(initializer(torch.empty(self.item_num, self.latent_size)))
         })
         return embedding_dict
+
+    def _mask(self):
+        embeds = torch.concat([self.embedding_dict['user_emb'], self.embedding_dict['item_emb']], axis=0)
+        masked_embeds, seeds = self.gene_masker(embeds)
+        return masked_embeds[:self.user_num], masked_embeds[self.user_num:], seeds
 
     def make_all_one_adj(self):
         idxs = self.sparse_norm_adj._indices()
@@ -221,19 +245,37 @@ class LRMRec_Encoder(nn.Module):
     def mask_subgraphs(self, seeds):
         return self.masker(self.sparse_norm_adj, seeds)
     
-    def forward(self, encoder_adj, decoder_adj=None):
-        ego_embeddings = torch.cat([self.embedding_dict['user_emb'], self.embedding_dict['item_emb']], 0)
-        all_embeddings = [ego_embeddings]
-        for k, gcn in enumerate(self.gcnLayers):
-            ego_embeddings = gcn(encoder_adj, all_embeddings[-1])
-            all_embeddings.append(ego_embeddings)
+    def ssl_con_loss(self, x, y, temp):
+        x = F.normalize(x)
+        y = F.normalize(y)
+        mole = torch.exp(torch.sum(x * y, dim=1) / temp)
+        deno = torch.sum(torch.exp(x @ y.T / temp), dim=1)
+
+        return -torch.log(mole / (deno + 1e-8) + 1e-8).mean()
+
+    def _reconstruction(self, embeds, seeds):
+        enc_embeds = embeds[seeds]
+        prf_embeds = self.prf_embeds[seeds]
+        enc_embeds = self.mlp(enc_embeds)
+        recon_loss = self.ssl_con_loss(enc_embeds, prf_embeds, self.re_temperature)
+        return recon_loss
+
+    def forward(self, encoder_adj, decoder_adj=None, masked_user_embeds=None, masked_item_embeds=None):
+        if masked_user_embeds is None or masked_item_embeds is None:
+            embeds = torch.concat([self.embedding_dict['user_emb'], self.embedding_dict['item_emb']], axis=0)
+        else:
+            embeds = torch.concat([masked_user_embeds, masked_item_embeds], axis=0)
+        embedsLst = [embeds]
+        for i, gcn in enumerate(self.gcnLayers):
+            embeds = gcn(encoder_adj, embedsLst[-1])
+            embedsLst.append(embeds)
         if decoder_adj is not None:
             for gt in self.gtLayers:
-                ego_embeddings = gt(decoder_adj, all_embeddings[-1])
-                all_embeddings.append(ego_embeddings)
-        all_embeddings = sum(all_embeddings)
+                embeds = gt(decoder_adj, embedsLst[-1])
+                embedsLst.append(embeds)
+        embeds = sum(embedsLst)
 
-        return ego_embeddings[:self.user_num], ego_embeddings[self.user_num:]
+        return embeds[:self.user_num], embeds[self.user_num:]
     
 class GCNLayer(nn.Module):
     def __init__(self):
@@ -379,3 +421,20 @@ class RandomMaskSubgraphs(nn.Module):
 
         decoder_adj = torch.sparse.FloatTensor(torch.stack([newRows, newCols], dim=0), torch.ones_like(newRows).cuda().float(), adj.shape)
         return encoder_adj, decoder_adj
+
+class NodeMask(nn.Module):
+    """ Mask nodes with learnable tokens
+    """
+    def __init__(self, mask_ratio, embedding_size):
+        super(NodeMask, self).__init__()
+        self.mask_ratio = mask_ratio
+        self.mask_token = nn.Parameter(torch.zeros(1, embedding_size))
+    
+    def forward(self, embeds):
+        seeds = np.random.choice(embeds.shape[0], size=max(int(embeds.shape[0] * self.mask_ratio), 1), replace=False)
+        seeds = torch.LongTensor(seeds).cuda()
+        mask = torch.ones(embeds.shape[0]).cuda()
+        mask[seeds] = 0
+        mask = mask.view(-1, 1)
+        masked_embeds = embeds * mask + self.mask_token * (1. - mask)
+        return masked_embeds, seeds 

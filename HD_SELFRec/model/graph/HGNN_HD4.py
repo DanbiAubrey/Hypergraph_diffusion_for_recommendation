@@ -14,18 +14,14 @@ import torch.nn.functional as F
 import torch.nn.init as init
 import os
 import random
-#from model.layers.layers2 import EquivSetGNN2
-from model.layers import EquivSetGNN
+from model.layers.layers2 import EquivSetGNN2
 from model.layers.wavelet import WaveletTransform
-from model.layers.gwnn_layer import SparseGraphWaveletLayer
-from model.layers.wavelettransform import WaveletTransform
-from model.layers import wavelet
 
 '''
-python main.py --model=HGNN_HD3 --dataset=lastfm  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20 --mode=full
-python main.py --model=HGNN_HD3 --dataset=amazon_books  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.001 --early_stopping_steps=20 --seed=20 --mode=local_only --n_layers=3
-python main.py --model=HGNN_HD3 --dataset=steam  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
-python main.py --model=HGNN_HD3 --dataset=yelp  --lrate=0.001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
+python main.py --model=HGNN_HD4 --dataset=lastfm  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20 --mode=local_only
+python main.py --model=HGNN_HD4 --dataset=amazon_books  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.001 --early_stopping_steps=20 --seed=20 --mode=local_only --n_layers=3
+python main.py --model=HGNN_HD4 --dataset=steam  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
+python main.py --model=HGNN_HD4 --dataset=yelp  --lrate=0.001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20
 '''
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -33,7 +29,7 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'# address cuda ov
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 # paper: LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation. SIGIR'20\
-class HGNN_HD3(GraphRecommender):
+class HGNN_HD4(GraphRecommender):
     def __init__(self, conf, training_set, test_set, knowledge_set, **kwargs):
         GraphRecommender.__init__(self, conf, training_set, test_set, knowledge_set, **kwargs)
         self.device = device
@@ -123,20 +119,11 @@ class HGNN_HD3(GraphRecommender):
                 user_idx, pos_idx, neg_idx = batch
 
                 if self.mode == 'local_only':
-                    # with torch.profiler.profile(
-                    #     activities=[
-                    #         torch.profiler.ProfilerActivity.CPU, 
-                    #         torch.profiler.ProfilerActivity.CUDA  # GPU 사용 시
-                    #     ],
-                    #     record_shapes=True,  # 각 연산에서 텐서 모양 기록
-                    #     profile_memory=True,  # 메모리 사용량 기록
-                    #     with_stack=True  # 소스 코드 스택 추적 기록
-                    # ) as prof:
-                        user_emb_lc, item_emb_lc = train_model(mode='local', keep_rate=1-self.drop_rate)
-
-                        anchor_emb = user_emb_lc[user_idx]
-                        pos_emb = item_emb_lc[pos_idx]
-                        neg_emb = item_emb_lc[neg_idx]
+                    user_emb_lc, item_emb_lc = train_model(mode='local', keep_rate=1-self.drop_rate)
+                
+                    anchor_emb = user_emb_lc[user_idx]
+                    pos_emb = item_emb_lc[pos_idx]
+                    neg_emb = item_emb_lc[neg_idx]
                 elif self.mode == 'group_only':
                     user_emb_grp, item_emb_grp = train_model(mode='group', keep_rate=1-self.drop_rate)
                     
@@ -200,7 +187,7 @@ class HGNN_HD3(GraphRecommender):
 
                 # Evaluation
                 train_model.eval()
-            #print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
+
             with torch.no_grad():
                 if self.mode == 'local_only':
                     user_emb_lc, item_emb_lc = train_model(mode='local')
@@ -261,7 +248,7 @@ class HGNN_HD3(GraphRecommender):
                 self.best_user_emb = torch.mean(torch.stack([user_emb_lc, user_emb_grp], dim=1), dim=1)
                 self.best_item_emb = torch.mean(torch.stack([item_emb_lc, item_emb_grp], dim=1), dim=1)
 
-            self.save_model(self.model)
+            self.save_model(self.model)     
 
 class HGNNModel(nn.Module):
     def __init__(self, data, args, device):
@@ -351,7 +338,6 @@ class LocalAwareEncoder(nn.Module):
     def __init__(self, data, emb_size, hyper_size, n_layers, leaky, drop_rate, device, use_self_att=False):
         super(LocalAwareEncoder, self).__init__()
 
-        torch.autograd.set_detect_anomaly(True)
         self.data = data
         self.latent_size = emb_size
         self.hyper_size = hyper_size
@@ -366,26 +352,22 @@ class LocalAwareEncoder(nn.Module):
         
         self.edhnn_args = self.init_edhnn_config(self.hyper_size)
 
-        self.hgcn_layer = HGCNConv(leaky=0.3)
+        # self.edhnn_layers = nn.ModuleList([EquivSetGNN.EquivSetGNN(hyper_size, self.edhnn_args, self.sparse_norm_adj, self.data) for i in range(2)])
+        self.hgcn_layers = nn.ModuleList([HGCNConv(leaky=0.5) for i in range(self.layers)])
+        self.edhnn_layers = nn.ModuleList([EquivSetGNN2.EquivSetGNN(hyper_size, self.edhnn_args, self.sparse_norm_adj, self.data) for i in range(self.layers)])
         self.lns = torch.nn.ModuleList()
 
         for i in range(self.layers):
             self.lns.append(torch.nn.LayerNorm(hyper_size))
 
-        self.hgnn_layers = nn.ModuleList([HGCNConv(leaky=0.3) for i in range(self.layers)])
-        self.edhnn_layers = nn.ModuleList([EquivSetGNN.EquivSetGNN(hyper_size, self.edhnn_args, self.sparse_norm_adj, self.data, self.data.n_users, self.data.n_items) for i in range(self.layers)])
-        self.lns = torch.nn.ModuleList()
-        for i in range(self.layers):
-            self.lns.append(torch.nn.LayerNorm(hyper_size))
-
-        # self.wavelet = WaveletTransform(self.sparse_norm_adj, approx=True)
-        # self.wavelet_hypergraph = self.wavelet.generate_hypergraph()
+        # self.edhnn_user_n, self.edhnn_item_n = self.data.n_users, self.data.n_items # norm_adj:[u_n +i_n, u_n +i_n]
+        self.edhnn_ui_n = self.data.n_items + self.data.n_users
 
         self.hyper_uu = torch.tensor(self.ui_adj.todense()[:self.data.n_users, self.data.n_users:], requires_grad=False).to(device)# sparse_norm_adj: [user+item, user+item]
-        self.hyper_ii = torch.tensor(self.ui_adj.todense()[self.data.n_users:, :self.data.n_users], requires_grad=False).to(device)
+        self.hyper_ii = torch.tensor(self.ui_adj.todense()[self.data.n_users, :self.data.n_users], requires_grad=False).to(device)
 
-        self.edhnn_ui_n = self.data.n_users + self.data.n_items
-
+        self.dense_hypergraph = torch.tensor(self.ui_adj.todense())
+    
     def init_edhnn_config(self, hyper_size):
         edhnn_args ={
             'MLP_hidden' : hyper_size,
@@ -411,19 +393,16 @@ class LocalAwareEncoder(nn.Module):
 
         for k in range(self.layers):
             if k != self.layers - 1: 
-                #ego_embeddings = self.hgnn_layers[k](sparse_norm_adj, ego_embeddings)  + res
-                #ego_embeddings = self.lns[k](self.hgnn_layers[k](sparse_norm_adj, ego_embeddings))  + res
-                ego_embeddings = self.edhnn_layers[k](ego_embeddings, sparse_norm_adj, self.edhnn_ui_n) + res
+                #ego_embeddings = self.lns[k](self.hgcn_layers[0](sparse_norm_adj, ego_embeddings)) + res
+                ego_embeddings = self.edhnn_layers[k](ego_embeddings, self.dense_hypergraph, self.edhnn_ui_n) + res
             else:
-                #ego_embeddings = self.lns[0](self.hgcn_layer(self.sparse_norm_adj, ego_embeddings, act=False)) + res
-                ego_embeddings = self.lns[k](self.hgcn_layer(self.sparse_norm_adj, ego_embeddings, act=False)) + res
-                #ego_embeddings = self.edhnn_layers[k](ego_embeddings, sparse_norm_adj, self.edhnn_ui_n) + res
+                ego_embeddings = self.lns[0](self.hgcn_layers[0](sparse_norm_adj, ego_embeddings, act=False)) + res
+                #ego_embeddings = self.lns[0](self.edhnn_layers[k](ego_embeddings, self.dense_hypergraph, self.edhnn_ui_n)) + res
             all_embeddings += [ego_embeddings]
 
         user_all_embeddings = all_embeddings[-1][:self.data.n_users]
         item_all_embeddings = all_embeddings[-1][self.data.n_users:]
         return user_all_embeddings, item_all_embeddings
-
 
 class GroupAwareEncoder(nn.Module):
     def __init__(self, data, p, drop_rate, layers, emb_size):
@@ -435,18 +414,8 @@ class GroupAwareEncoder(nn.Module):
         self.in_channels, self.out_channels = emb_size, emb_size
         self.ncount = self.data.n_users + self.data.n_items
         self.device = device
-        self.hwnn_args = {
-            'filters':self.out_channels,
-            'dropout': 0.01,
-            'ncount': self.ncount,
-            'mcount': self.ncount,
-            'feature_number': self.out_channels
-        }
-        self.wavelet_layers = nn.ModuleList([wavelet.HWNN(self.hwnn_args['filters'], self.hwnn_args['dropout'], self.hwnn_args['ncount'], self. hwnn_args['mcount'], self.hwnn_args['feature_number'], self.device, self.data) for i in range(self.layers)])
+        #self.gwnn_layers = nn.ModuleList([SparseGraphWaveletLayer(self.in_channels, self.out_channels, self.ncount, self.device) for i in range(self.layers)])
         self.hgcn_layers = nn.ModuleList([HGCNConv(leaky=0.5) for i in range(self.layers)])
-
-        # self.ui_adj = data.ui_adj
-        # self.ui_graph = torch.tensor(self.ui_adj.todense()[:self.data.n_users, self.data.n_users:], requires_grad=False).to(device)
 
     def forward(self, ego_embeddings, sparse_norm_adj):
         res = ego_embeddings
@@ -454,10 +423,14 @@ class GroupAwareEncoder(nn.Module):
 
         for k in range(self.layers):
             if k != self.layers - 1:
-                ego_embeddings = self.wavelet_layers[k](ego_embeddings, sparse_norm_adj, 'graph_wavelet')
+                ego_embeddings = self.hgcn_layers[k](sparse_norm_adj,ego_embeddings)
             else:
-                ego_embeddings = self.wavelet_layers[k](ego_embeddings, sparse_norm_adj, 'graph_wavelet')
+                ego_embeddings = self.hgcn_layers[k](sparse_norm_adj,ego_embeddings)
 
+        user_all_embeddings = all_embeddings[-1][:self.data.n_users]
+        item_all_embeddings = all_embeddings[-1][self.data.n_users:]
+
+        return user_all_embeddings, item_all_embeddings
 
 class SpAdjDropEdge(nn.Module):
 	def __init__(self):
@@ -473,7 +446,7 @@ class SpAdjDropEdge(nn.Module):
 		newVals = vals[mask] / keepRate
 		newIdxs = idxs[:, mask]
 		return torch.sparse.FloatTensor(newIdxs, newVals, adj.shape)
-    
+
 class HGCNConv(nn.Module):
     def __init__(self, leaky):
         super(HGCNConv, self).__init__()

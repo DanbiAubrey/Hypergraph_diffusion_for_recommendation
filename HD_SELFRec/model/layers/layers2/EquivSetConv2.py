@@ -1,3 +1,6 @@
+'''
+original Equivariant Hypergraph Diffusion Operator
+'''
 import time
 from tqdm import tqdm
 import os 
@@ -28,7 +31,7 @@ import torch_scatter
 import logging
 import sys
 
-device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 #print(torch.cuda.is_available())
 ### EDHNN ###
@@ -79,48 +82,21 @@ class EquivSetConv(nn.Module):
         if isinstance(self.W, MLP):
             self.W.reset_parameters()
     
-    def forward(self, X, hypergraph, X0):
-        N = X.shape[-2]# 2708(node_num)
-        '''
-        X.shape: [2708, 256] [node_num, feature_dim]
-        vetex:tensor([   0,    0,    0,  ..., 1888, 1889, 1890], device='cuda:0')
-        edges:tensor([16668, 16755, 16787,  ..., 28952, 16803, 29811], device='cuda:0')
-        '''
-        #select the processed nodes
-        #logging.critical("node gathering...")
-        #print(f"X.shape{X.shape}")
-        Xve = self.W1(X) # [nnz, C]([7494, 256]) # self.W1(X): [node_num, emb_size]
-        #print(f"Xve.shape: {Xve.shape}")
-        #TODO: simple version of hypergraph neural networks
-        
-        Xe = self.hgnn_layers[0](hypergraph, Xve)
-        #print(f"Xe.shape: {Xe.shape}")
-        
-        #Xe = torch_scatter.scatter(Xve, edges, dim=-2, reduce=self.aggr) # [E, C], reduce is 'mean' here as default
-        
-        # TODO: replace aggregation to hypergraph covolution based on wavelet
+    def forward(self, X, vertex, edges, X0):
+        N = X.shape[-2]
 
-        # Xev = Xe[..., edges, :] # [nnz, C]
-        # Xev = self.W2(torch.cat([X[..., vertex, :], Xev], -1))
-
-        #logging.critical("edge gathering...")
-        Xev = self.W2(torch.cat([X, Xe], -1))
-        #print(f"Xev.shape:{Xev.shape}")
-        Xev = self.mean_pooling(Xev)
-        #print(f"Xev.shape: {Xev.shape}")
-        X_v = self.hgnn_layers[1](hypergraph, Xev)
-        #print(f"X_v.shape: {X_v.shape}")
+        Xve = self.W1(X)[..., vertex, :] # [nnz, C]
+        Xe = torch_scatter.scatter(Xve, edges, dim=-2, reduce=self.aggr) # [E, C], reduce is 'mean' here as default
         
-        #Xv = torch_scatter.scatter(Xev, vertex, dim=-2, reduce=self.aggr, dim_size=N) # [N, C]
+        Xev = Xe[..., edges, :] # [nnz, C]
+        Xev = self.W2(torch.cat([X[..., vertex, :], Xev], -1))
+        Xv = torch_scatter.scatter(Xev, vertex, dim=-2, reduce=self.aggr, dim_size=N) # [N, C]
 
-        X = X_v
+        X = Xv
 
-        #logging.critical("residual connection...")
-        #print(f"X.shape: {X.shape}, X0.shape: {X0.shape}")
-        
         X = (1-self.alpha) * X + self.alpha * X0
         X = self.W(X)
-
+    
         return X
 
     '''---'''

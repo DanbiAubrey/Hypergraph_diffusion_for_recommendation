@@ -111,9 +111,7 @@ class LGCN_Encoder(nn.Module):
         self.embedding_dict = self._init_model()
         self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda()
         self.all_one_adj = self.make_all_one_adj()
-        print(self.all_one_adj)
-        exit()
-
+        
     def make_all_one_adj(self):
         idxs = self.sparse_norm_adj._indices()
         vals = torch.ones_like(self.sparse_norm_adj._values())
@@ -136,6 +134,7 @@ class LGCN_Encoder(nn.Module):
             all_embeddings += [ego_embeddings]
         all_embeddings = torch.stack(all_embeddings, dim=1)
         all_embeddings = torch.mean(all_embeddings, dim=1)
+
         user_all_embeddings = all_embeddings[:self.data.n_users]
         item_all_embeddings = all_embeddings[self.data.n_users:]
         return user_all_embeddings, item_all_embeddings

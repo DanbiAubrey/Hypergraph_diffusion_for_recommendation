@@ -25,6 +25,9 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'# address cuda overload
 '''
 - python main.py --model=LocalEncoder --dataset=amazon_books  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.2 --early_stopping_steps=20  --seed=20 --mode=woglobal
+- python main.py --model=LocalEncoder --dataset=steam  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.2 --early_stopping_steps=20  --seed=20 --mode=woglobal
+- python main.py --model=LocalEncoder --dataset=yelp  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.2 --early_stopping_steps=20  --seed=20 --mode=woglobal
+- python main.py --model=LocalEncoder --dataset=lastfm  --lrate=0.0001 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.2 --early_stopping_steps=20  --seed=20 --mode=woglobal
 '''
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 class LocalEncoder(GraphRecommender):
@@ -401,7 +404,7 @@ class SelfAwareEncoder(nn.Module):
         self.dropout = nn.Dropout(drop_rate)
         self.edgeDropper = SpAdjDropEdge()
         
-        self.use_self_att = True
+        self.use_self_att = False
 
         self.hgnn_layers = torch.nn.ModuleList()
         self.ugformer_layers = torch.nn.ModuleList()
