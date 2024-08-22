@@ -20,6 +20,7 @@ from model.layers.wavelet import WaveletTransform
 from model.layers.gwnn_layer import SparseGraphWaveletLayer
 from model.layers.wavelettransform import WaveletTransform
 from model.layers import wavelet
+import torch_scatter
 
 '''
 python main.py --model=HGNN_HD3 --dataset=lastfm  --lrate=0.01 --weight_decay=5e-6 --drop_rate=0.2 --p=0.3 --cl_rate=1e-05 --temp=0.2 --reg=0.1 --early_stopping_steps=20 --seed=20 --mode=full
@@ -88,6 +89,7 @@ class HGNN_HD3(GraphRecommender):
         random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
         # When running on the CuDNN backend, two further options must be set
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
@@ -331,7 +333,7 @@ class HGNNModel(nn.Module):
             user_embed, item_embed = self.calculate_local_embeddings(keep_rate=keep_rate)
             return user_embed, item_embed
         elif mode == 'group':
-            entity_embed = self.calculate_group_embeddings(keep_rate=keep_rate)
+            user_embed, item_embed = self.calculate_group_embeddings(keep_rate=keep_rate)
             return user_embed, item_embed
 
     def calculate_cf_loss(self, anchor_emb, pos_emb, neg_emb, reg):
@@ -373,7 +375,7 @@ class LocalAwareEncoder(nn.Module):
             self.lns.append(torch.nn.LayerNorm(hyper_size))
 
         self.hgnn_layers = nn.ModuleList([HGCNConv(leaky=0.3) for i in range(self.layers)])
-        self.edhnn_layers = nn.ModuleList([EquivSetGNN.EquivSetGNN(hyper_size, self.edhnn_args, self.sparse_norm_adj, self.data, self.data.n_users, self.data.n_items) for i in range(self.layers)])
+        self.edhnn_layers = nn.ModuleList([EquivSetGNN(hyper_size, self.edhnn_args, self.sparse_norm_adj, self.data, self.data.n_users, self.data.n_items) for i in range(self.layers)])
         self.lns = torch.nn.ModuleList()
         for i in range(self.layers):
             self.lns.append(torch.nn.LayerNorm(hyper_size))
@@ -413,7 +415,7 @@ class LocalAwareEncoder(nn.Module):
             if k != self.layers - 1: 
                 #ego_embeddings = self.hgnn_layers[k](sparse_norm_adj, ego_embeddings)  + res
                 #ego_embeddings = self.lns[k](self.hgnn_layers[k](sparse_norm_adj, ego_embeddings))  + res
-                ego_embeddings = self.edhnn_layers[k](ego_embeddings, sparse_norm_adj, self.edhnn_ui_n) + res
+                ego_embeddings = self.edhnn_layers[k](ego_embeddings, sparse_norm_adj, self.edhnn_ui_n, self.ui_adj) + res
             else:
                 #ego_embeddings = self.lns[0](self.hgcn_layer(self.sparse_norm_adj, ego_embeddings, act=False)) + res
                 ego_embeddings = self.lns[k](self.hgcn_layer(self.sparse_norm_adj, ego_embeddings, act=False)) + res
@@ -423,6 +425,27 @@ class LocalAwareEncoder(nn.Module):
         user_all_embeddings = all_embeddings[-1][:self.data.n_users]
         item_all_embeddings = all_embeddings[-1][self.data.n_users:]
         return user_all_embeddings, item_all_embeddings
+    
+    # def forward(self, ego_embeddings, sparse_norm_adj):
+    #     res = ego_embeddings
+    #     res_user = ego_embeddings[:self.data.n_users]
+    #     res_item = ego_embeddings[self.data.n_users:]
+    #     all_embeddings = []
+
+    #     for k in range(self.layers):
+    #         if k != self.layers - 1: 
+    #             user_ego = self.edhnn_layers[k](ego_embeddings[:self.data.n_users], self.hyper_uu, self.edhnn_ui_n, self.ui_adj) + res_user
+    #             item_ego = self.edhnn_layers[k](ego_embeddings[self.data.n_users:], self.hyper_ii, self.edhnn_ui_n, self.ui_adj) + res_item
+    #             ego_embeddings = torch.cat([user_ego, item_ego], dim=0)
+    #         else:
+    #             #ego_embeddings = self.lns[0](self.hgcn_layer(self.sparse_norm_adj, ego_embeddings, act=False)) + res
+    #             ego_embeddings = self.lns[k](self.hgcn_layer(self.sparse_norm_adj, ego_embeddings, act=False)) + res
+    #             #ego_embeddings = self.edhnn_layers[k](ego_embeddings, sparse_norm_adj, self.edhnn_ui_n) + res
+    #         all_embeddings += [ego_embeddings]
+
+    #     user_all_embeddings = all_embeddings[-1][:self.data.n_users]
+    #     item_all_embeddings = all_embeddings[-1][self.data.n_users:]
+    #     return user_all_embeddings, item_all_embeddings
 
 
 class GroupAwareEncoder(nn.Module):
@@ -442,22 +465,62 @@ class GroupAwareEncoder(nn.Module):
             'mcount': self.ncount,
             'feature_number': self.out_channels
         }
-        self.wavelet_layers = nn.ModuleList([wavelet.HWNN(self.hwnn_args['filters'], self.hwnn_args['dropout'], self.hwnn_args['ncount'], self. hwnn_args['mcount'], self.hwnn_args['feature_number'], self.device, self.data) for i in range(self.layers)])
+        self.sparse_norm_adj = self.sparse_norm_adj  = TorchGraphInterface.convert_sparse_mat_to_tensor(data.norm_adj).to(device)
+        self.wavelet_layers = nn.ModuleList([HWNN(self.hwnn_args['filters'], self.hwnn_args['dropout'], self.hwnn_args['ncount'], self. hwnn_args['mcount'], self.hwnn_args['feature_number'], self.device, self.data) for i in range(self.layers)])
+        self.wavelet_layers_uu = nn.ModuleList([HWNN(self.hwnn_args['filters'], self.hwnn_args['dropout'], self.data.n_users, self. hwnn_args['mcount'], self.hwnn_args['feature_number'], self.device, self.data) for i in range(self.layers)])
+        self.wavelet_layers_ii = nn.ModuleList([HWNN(self.hwnn_args['filters'], self.hwnn_args['dropout'], self.data.n_items, self. hwnn_args['mcount'], self.hwnn_args['feature_number'], self.device, self.data) for i in range(self.layers)])
         self.hgcn_layers = nn.ModuleList([HGCNConv(leaky=0.5) for i in range(self.layers)])
 
-        # self.ui_adj = data.ui_adj
-        # self.ui_graph = torch.tensor(self.ui_adj.todense()[:self.data.n_users, self.data.n_users:], requires_grad=False).to(device)
+        self.ui_adj = self.data.ui_adj
+        self.hyper_uu = torch.tensor(self.ui_adj.todense()[:self.data.n_users, self.data.n_users:], requires_grad=False).to(device)# sparse_norm_adj: [user+item, user+item]
+        self.hyper_ii = torch.tensor(self.ui_adj.todense()[self.data.n_users:, :self.data.n_users], requires_grad=False).to(device)
+
+        self.edhnn_ui_n = self.data.n_users + self.data.n_items
+
+        self.lns = torch.nn.LayerNorm(emb_size)
+        
+
+        # self.wavelet = WaveletTransform(self.ui_adj, approx=True)
+        # self.wavelet_hypergraph = self.wavelet.generate_hypergraph()
+
+    # def forward(self, ego_embeddings, sparse_norm_adj):
+    #     res = ego_embeddings
+    #     all_embeddings = []
+
+    #     for k in range(self.layers):
+    #         if k != self.layers - 1:
+    #             ego_embeddings = self.wavelet_layers[k](ego_embeddings, sparse_norm_adj, '') + res
+    #         else:
+    #             ego_embeddings = self.wavelet_layers[k](ego_embeddings, sparse_norm_adj, '') + res
+    #         all_embeddings += [ego_embeddings]
+
+    #     user_all_embeddings = all_embeddings[-1][:self.data.n_users]
+    #     item_all_embeddings = all_embeddings[-1][self.data.n_users:]
+    #     return user_all_embeddings, item_all_embeddings
 
     def forward(self, ego_embeddings, sparse_norm_adj):
         res = ego_embeddings
+        res_user = ego_embeddings[:self.data.n_users]
+        res_item = ego_embeddings[self.data.n_users:]
         all_embeddings = []
 
         for k in range(self.layers):
-            if k != self.layers - 1:
-                ego_embeddings = self.wavelet_layers[k](ego_embeddings, sparse_norm_adj, 'graph_wavelet')
+            if k != self.layers - 1: 
+                user_ego = self.wavelet_layers_uu[k](ego_embeddings[:self.data.n_users], self.hyper_uu, 'simple') + res_user
+                item_ego = self.wavelet_layers_ii[k](ego_embeddings[self.data.n_users:], self.hyper_ii, 'simple') + res_item
+                ego_embeddings = torch.cat([user_ego, item_ego], dim=0)
             else:
-                ego_embeddings = self.wavelet_layers[k](ego_embeddings, sparse_norm_adj, 'graph_wavelet')
+                #ego_embeddings = self.lns[0](self.hgcn_layer(self.sparse_norm_adj, ego_embeddings, act=False)) + res
+                ego_embeddings = self.lns(self.hgcn_layers[0](self.sparse_norm_adj, ego_embeddings, act=False)) + res
+                #ego_embeddings = self.edhnn_layers[k](ego_embeddings, sparse_norm_adj, self.edhnn_ui_n) + res
+                # user_ego = self.wavelet_layers_uu[k](ego_embeddings[:self.data.n_users], self.hyper_uu, 'simple') + res_user
+                # item_ego = self.wavelet_layers_ii[k](ego_embeddings[self.data.n_users:], self.hyper_ii, 'simple') + res_item
+                # ego_embeddings = torch.cat([user_ego, item_ego], dim=0)
+            all_embeddings += [ego_embeddings]
 
+        user_all_embeddings = all_embeddings[-1][:self.data.n_users]
+        item_all_embeddings = all_embeddings[-1][self.data.n_users:]
+        return user_all_embeddings, item_all_embeddings
 
 class SpAdjDropEdge(nn.Module):
 	def __init__(self):
@@ -488,3 +551,473 @@ class HGCNConv(nn.Module):
             # print(f"adj.shape: {adj.shape}")
             # print(f"embs.shape: {embs.shape}")
             return torch.sparse.mm(adj, torch.sparse.mm(adj.t(), embs))
+
+class EquivSetGNN(nn.Module):
+    def __init__(self, num_features, args, dense_hypergraph, data, ncount, mcount):
+        """UniGNNII
+
+        Args:
+            args   (NamedTuple): global args
+            nfeat  (int): dimension of features
+            nhid   (int): dimension of hidden features, note that actually it\'s #nhid x #nhead
+            nclass (int): number of classes
+            nlayer (int): number of hidden layers
+            nhead  (int): number of conv heads
+            V (torch.long): V is the row index for the sparse incident matrix H, |V| x |E|
+            E (torch.long): E is the col index for the sparse incident matrix H, |V| x |E|
+        """
+        super().__init__()
+        nhid = args['MLP_hidden']
+        act = {'Id': nn.Identity(), 'relu': nn.ReLU(), 'prelu':nn.PReLU()}
+        self.act = act[args['activation']]
+        self.input_drop = nn.Dropout(args['input_dropout']) # 0.6 is chosen as default
+        self.dropout = nn.Dropout(args['dropout']) # 0.2 is chosen for GCNII
+        self.data = data
+
+        self.in_channels = num_features
+        self.hidden_channels = args['MLP_hidden']
+        #self.output_channels = num_classes
+
+        self.mlp1_layers = args['MLP_num_layers']
+        self.mlp2_layers = args['MLP_num_layers'] if args['MLP2_num_layers'] < 0 else args['MLP2_num_layers']
+        self.mlp3_layers = args['MLP_num_layers'] if args['MLP3_num_layers'] < 0 else args['MLP3_num_layers']
+        self.nlayer = args['All_num_layers']
+
+        self.lin_in = torch.nn.Linear(num_features, args['MLP_hidden'])
+        
+        self.conv = EquivSetConv(args['MLP_hidden'], args['MLP_hidden'], ncount, mcount, mlp1_layers=self.mlp1_layers, mlp2_layers=self.mlp2_layers,
+            mlp3_layers=self.mlp3_layers, alpha=args['restart_alpha'], aggr=args['aggregate'],
+            dropout=args['dropout'], normalization=args['normalization'], input_norm=args['AllSet_input_norm'], hypergraph=dense_hypergraph, data=self.data)
+
+    def reset_parameters(self):
+        self.lin_in.reset_parameters()
+        self.conv.reset_parameters()
+
+    def forward(self, x, sparse_norm_adj, n_nodes, ui_adj, act=True):
+        '''my code'''
+        # build bipartite graphs for user and item(star expension)
+        #V, E = self.generate_V_E(n_nodes, sparse_norm_adj)
+        '''---'''
+        lamda, alpha = 0.5, 0.1
+        x = self.dropout(x)
+        x = F.relu(self.lin_in(x))
+        x0 = x
+        for i in range(self.nlayer):
+            x = self.dropout(x)
+            x = self.conv(x, sparse_norm_adj, x0, ui_adj, act)
+            x = self.act(x)
+        x = self.dropout(x)
+        return x
+
+    '''my_code'''
+    def generate_V_E(self, n_nodes, hypergraph):
+        
+        new_connections = self.build_new_hypergraph(hypergraph)
+
+        hypergraph = hypergraph.to_dense()
+        non_zero_indices = torch.nonzero(hypergraph > 0)
+        n_connections = non_zero_indices.size(0)
+        
+        vertex_n = hypergraph.shape[0]
+        edge_n = hypergraph.shape[1]
+
+        V = torch.zeros(n_connections, dtype=torch.long)# [120938]
+        E = torch.zeros(n_connections, dtype=torch.long)# [120938]
+        
+        V = non_zero_indices[:, 0].to(device)
+        E = non_zero_indices[:, 1].to(device)
+        
+        return V, E
+
+    def build_new_hypergraph(self, hypergraph):
+
+        hypergraph = hypergraph.to_dense()
+        vertex_n = hypergraph.shape[0]
+        edge_n = hypergraph.shape[1]
+
+        list_vertices = torch.arange(vertex_n, dtype= torch.long)#16668
+        list_edges = torch.arange(edge_n, dtype = torch.long) + vertex_n
+        #tensor([16668, 16669, 16670,  ..., 33333, 33334, 33335])
+
+        new_n_vertex = vertex_n + edge_n
+        new_vertices = torch.cat((list_vertices,list_edges))
+       
+        #new E-> V connections
+        V_E_connections = torch.nonzero(hypergraph > 0)
+        E_V_connections = V_E_connections
+        E_V_connections = E_V_connections[:, [1, 0]]
+        E_V_connections[:,0] += vertex_n
+       
+        new_connections = torch.cat((V_E_connections, E_V_connections), 0)
+        
+        return new_connections
+        
+class EquivSetConv(nn.Module):
+    def __init__(self, in_features, out_features, ncount, mcount, mlp1_layers=1, mlp2_layers=1,
+        mlp3_layers=1, aggr='add', alpha=0.5, dropout=0., normalization='None', input_norm=False, hypergraph=None, data=None):
+        super().__init__()
+
+        if mlp1_layers > 0:
+            self.W1 = MLP(in_features, out_features, out_features, mlp1_layers,
+                dropout=dropout, Normalization=normalization, InputNorm=input_norm).to(device)
+        else:
+            self.W1 = nn.Identity().to(device)
+
+        if mlp2_layers > 0:
+            self.W2 = MLP(in_features+out_features, out_features, out_features, mlp2_layers,
+                dropout=dropout, Normalization=normalization, InputNorm=input_norm).to(device)
+        else:
+            self.W2 = lambda X: X[..., in_features:].to(device)
+
+        if mlp3_layers > 0:
+            self.W = MLP(out_features, out_features, out_features, mlp3_layers,
+                dropout=dropout, Normalization=normalization, InputNorm=input_norm).to(device)
+        else:
+            self.W = nn.Identity().to(device)
+        self.aggr = aggr
+        self.alpha = alpha
+        self.dropout = dropout
+        self.data = data
+        self.device = device
+        self.hwnn_args = {
+            'filters': out_features,
+            'dropout': 0.01,
+            'ncount': ncount,
+            'mcount': mcount,
+            'feature_number': out_features
+        }
+        #self.hwnn_layers = nn.ModuleList([HWNN(self.hwnn_args['filters'], self.hwnn_args['dropout'], self.hwnn_args['ncount'], self. hwnn_args['mcount'], self.hwnn_args['feature_number'], self.device, self.data) for i in range(2)])
+        self.hgcn_layers = nn.ModuleList([HGCNConv(0.5) for i in range(2)])
+        self.mean_pooling = nn.AdaptiveAvgPool1d(out_features)
+        self.lns = torch.nn.ModuleList()
+
+        for i in range(2):
+            self.lns.append(torch.nn.LayerNorm(out_features))
+
+    def reset_parameters(self):
+        if isinstance(self.W1, MLP):
+            self.W1.reset_parameters()
+        if isinstance(self.W2, MLP):
+            self.W2.reset_parameters()
+        if isinstance(self.W, MLP):
+            self.W.reset_parameters()
+    
+    def forward(self, X, sparse_norm_adj, X0, ui_adj, act=True):
+        N = X.shape[-2]# 2708(node_num)
+        
+        Xve = self.W1(X) # [nnz, C]([7494, 256]) # self.W1(X): [node_num, 256]
+        
+        Xe = self.lns[0](self.hgcn_layers[0](sparse_norm_adj, Xve, act=True)) + Xve
+        # edge gathering
+        Xev = self.W2(torch.cat([X, Xe], -1))
+        Xev = self.mean_pooling(Xev)
+        X_v = self.lns[1](self.hgcn_layers[1](sparse_norm_adj, Xev, act=True)) + Xev
+
+        X = X_v
+        X = (1-self.alpha) * X + self.alpha * X0
+        X = self.W(X)
+
+        return X
+    
+    # def forward(self, X, sparse_norm_adj, X0, ui_adj, act=True):
+    #     N = X.shape[-2]# 2708(node_num)
+    #     vertex, edges = self.generate_V_E(ui_adj.shape[0], sparse_norm_adj)
+    #     '''
+    #     X.shape: [2708, 256] [node_num, feature_dim]
+    #     vetex:tensor([   0,    0,    0,  ..., 1888, 1889, 1890], device='cuda:0')
+    #     edges:tensor([16668, 16755, 16787,  ..., 28952, 16803, 29811], device='cuda:0')
+    #     '''
+    
+    #     Xve = self.W1(X)[..., vertex, :] # [nnz, C]
+    #     Xe = torch_scatter.scatter(Xve, edges, dim=-2, reduce=self.aggr) # [E, C], reduce is 'mean' here as default
+        
+
+    #     Xev = Xe[..., edges, :] # [nnz, C]
+    #     Xev = self.W2(torch.cat([X[..., vertex, :], Xev], -1))
+    #     Xv = torch_scatter.scatter(Xev, vertex, dim=-2, reduce=self.aggr, dim_size=N) # [N, C]
+
+    #     X = Xv
+       
+    #     X = (1-self.alpha) * X + self.alpha * X0
+    #     X = self.W(X)
+
+    #     return X
+    
+    def generate_V_E(self, n_nodes, hypergraph):
+        
+        new_connections = self.build_new_hypergraph(hypergraph)
+
+        hypergraph = hypergraph.to_dense()
+        non_zero_indices = torch.nonzero(hypergraph > 0)
+        n_connections = non_zero_indices.size(0)
+        
+        vertex_n = hypergraph.shape[0]
+        edge_n = hypergraph.shape[1]
+
+        V = torch.zeros(n_connections, dtype=torch.long)# [120938]
+        E = torch.zeros(n_connections, dtype=torch.long)# [120938]
+        
+        V = non_zero_indices[:, 0].to(device)
+        E = non_zero_indices[:, 1].to(device)
+        
+        return V, E
+
+    def build_new_hypergraph(self, hypergraph):
+
+        hypergraph = hypergraph.to_dense()
+        vertex_n = hypergraph.shape[0]
+        edge_n = hypergraph.shape[1]
+
+        list_vertices = torch.arange(vertex_n, dtype= torch.long)#16668
+        list_edges = torch.arange(edge_n, dtype = torch.long) + vertex_n
+        #tensor([16668, 16669, 16670,  ..., 33333, 33334, 33335])
+
+        new_n_vertex = vertex_n + edge_n
+        new_vertices = torch.cat((list_vertices,list_edges))
+       
+        #new E-> V connections
+        V_E_connections = torch.nonzero(hypergraph > 0)
+        E_V_connections = V_E_connections
+        E_V_connections = E_V_connections[:, [1, 0]]
+        E_V_connections[:,0] += vertex_n
+       
+        new_connections = torch.cat((V_E_connections, E_V_connections), 0)
+        
+        return new_connections
+
+class HWNN(torch.nn.Module):
+    def __init__(self, filters, dropout, ncount, mcount, feature_number, device, data):
+        super(HWNN, self).__init__()
+        # self.features=features
+        self.ncount = ncount
+        self.mcount = mcount
+        self.feature_number = feature_number
+        self.filters = filters
+        self.device = device
+        self.data = data
+        self.dropout = dropout
+        self.setup_layers()
+
+    def setup_layers(self):
+        self.convolution_1 = HWNNLayer(self.feature_number,
+                                       self.filters,
+                                       self.ncount,
+                                       self.mcount,
+                                       self.device,
+                                       K1=3,
+                                       K2=3,
+                                       approx=True,
+                                       data=self.data)
+
+        # self.convolution_2 = HWNNLayer(self.filters,
+        #                                self.filters,
+        #                                self.ncount,
+        #                                self.device,
+        #                                K1=3,
+        #                                K2=3,
+        #                                approx=True,
+        #                                data=self.data)
+
+    def forward(self, features, wavelet, msg):
+        features = features.to(self.device)
+        channel_feature = []
+        
+        deep_features_1 = self.convolution_1(features, wavelet, msg)
+        #deep_features_1 = F.relu(self.convolution_1(features,self.data, msg))
+        # deep_features_1 = F.dropout(deep_features_1, self.dropout)
+        # deep_features_2 = self.convolution_2(deep_features_1,
+        #                                         self.data, msg)
+        # channel_feature.append(deep_features_2)
+        
+        channel_feature.append(deep_features_1)
+        return channel_feature[-1]
+
+class HWNNLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, ncount, mcount, device, K1=2, K2=2, approx=True, data=None):
+        super(HWNNLayer, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        #self.ncount = ncount
+        self.data = data
+        self.K1 = 1
+        self.K2 = 1
+        self.ncount = ncount
+        self.mcount = mcount
+        self.weight_matrix = torch.nn.Parameter(torch.Tensor(self.in_channels, self.out_channels))
+        self.diagonal_weight_filter = torch.nn.Parameter(torch.Tensor(self.ncount))
+        self.approx = approx
+        self.ui_adj = self.data.ui_adj
+        self.hyper_uu = torch.tensor(self.ui_adj.todense()[:self.data.n_users, self.data.n_users:], requires_grad=False).to(device)# sparse_norm_adj: [user+item, user+item]
+        self.hyper_ii = torch.tensor(self.ui_adj.todense()[self.data.n_users, :self.data.n_users], requires_grad=False).to(device)
+        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.data.norm_adj).to(device)
+        # self.wavelet = WaveletTransform(data.ui_adj, approx=True)
+        # self.wavelet_hypergraph = self.wavelet.generate_hypergraph()
+        self.par = torch.nn.Parameter(torch.Tensor(self.K1 + self.K2))
+        self.init_parameters()
+
+    def init_parameters(self):
+        torch.nn.init.xavier_uniform_(self.weight_matrix)
+        torch.nn.init.uniform_(self.diagonal_weight_filter, 0.99, 1.01)
+        torch.nn.init.uniform_(self.par, 0, 0.99)
+
+    def forward(self, features, wavelet_hypergraph, msg):
+        diagonal_weight_filter = torch.diag(self.diagonal_weight_filter).to(device)
+        features = features.to(device)
+
+        if msg == "msg_e":
+            Theta = wavelet_hypergraph["E_Theta"].to(device).to_sparse()
+            Theta_t = torch.transpose(Theta, 0, 1)
+        elif msg == "msg_v":
+            Theta = wavelet_hypergraph["V_Theta"].to(device).to_sparse()
+            Theta_t = torch.transpose(Theta, 0, 1)
+        elif msg == "simple_msg_e":
+            Theta = wavelet_hypergraph.t()
+            Theta_t = torch.transpose(Theta, 0, 1)
+        elif msg == "simple_msg_v":
+            Theta = wavelet_hypergraph
+            Theta_t = torch.transpose(Theta, 0, 1)
+        elif msg == 'simple':
+            w_hypergraph = wavelet_hypergraph.to(device).to_sparse()
+            w_hypergraph_t = torch.transpose(w_hypergraph, 0, 1)
+            Theta = torch.sparse.mm(wavelet_hypergraph, w_hypergraph_t)
+            Theta_t = torch.transpose(Theta, 0, 1)
+        else:
+            Theta = wavelet_hypergraph
+            Theta_t = torch.transpose(Theta, 0, 1)
+
+        if self.approx:
+            eye_ncount = torch.eye(self.ncount, device=device).to_sparse()
+            poly = self.par[0] * eye_ncount
+            Theta_mul = torch.eye(self.ncount).to(device).to_sparse()
+            for ind in range(1, self.K1):
+                Theta_mul = torch.sparse.mm(Theta_mul, Theta).to_sparse()
+                #poly.add_(self.par[ind] * Theta_mul)
+                poly = poly + self.par[ind] * Theta_mul
+
+            poly_t = self.par[self.K1] * eye_ncount
+            Theta_mul = eye_ncount
+            for ind in range(self.K1 + 1, self.K1 + self.K2):
+                Theta_mul = torch.sparse.mm(Theta_mul, Theta_t).to_sparse()
+                #poly_t.add_(self.par[ind] * Theta_mul)
+                poly_t = poly_t + self.par[ind] * Theta_mul
+            # poly=self.par[0]*torch.eye(self.ncount).to(self.device)+self.par[1]*Theta+self.par[2]*Theta@Theta
+            # poly_t = self.par[3] * torch.eye(self.ncount).to(self.device) + self.par[4] * Theta_t + self.par[5] * Theta_t @ Theta_t
+            # poly_t = self.par[3] * torch.eye(self.ncount).to(self.device) + self.par[4] * Theta + self.par[
+            #     5] * Theta @ Theta
+
+            local_fea_1 = poly @ diagonal_weight_filter @ poly_t @ features @ self.weight_matrix
+        else:
+            print("wavelets!")
+            wavelets = self.wavelet_hypergraph["wavelets"].to(device)
+            wavelets_inverse = self.wavelet_hypergraph["wavelets_inv"].to(device)
+            local_fea_1 = wavelets @ diagonal_weight_filter @ wavelets_inverse @ features @ self.weight_matrix
+    
+        return local_fea_1
+
+class MLP(nn.Module):
+    """ adapted from https://github.com/CUAI/CorrectAndSmooth/blob/master/gen_models.py """
+
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
+                 dropout=.5, Normalization='bn', InputNorm=False):
+        super(MLP, self).__init__()
+
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+
+        self.lins = nn.ModuleList()
+        self.normalizations = nn.ModuleList()
+        self.InputNorm = InputNorm
+        
+        assert Normalization in ['bn', 'ln', 'None']
+        if Normalization == 'bn':
+            if num_layers == 1:
+                # just linear layer i.e. logistic regression
+                if InputNorm:
+                    self.normalizations.append(nn.BatchNorm1d(in_channels))
+                else:
+                    self.normalizations.append(nn.Identity())
+                self.lins.append(nn.Linear(in_channels, out_channels))
+            else:
+                if InputNorm:
+                    self.normalizations.append(nn.BatchNorm1d(in_channels))
+                else:
+                    self.normalizations.append(nn.Identity())
+                self.lins.append(nn.Linear(in_channels, hidden_channels))
+                self.normalizations.append(nn.BatchNorm1d(hidden_channels))
+                for _ in range(num_layers - 2):
+                    self.lins.append(
+                        nn.Linear(hidden_channels, hidden_channels))
+                    self.normalizations.append(nn.BatchNorm1d(hidden_channels))
+                self.lins.append(nn.Linear(hidden_channels, out_channels))
+        elif Normalization == 'ln':
+            if num_layers == 1:
+                # just linear layer i.e. logistic regression
+                if InputNorm:
+                    self.normalizations.append(nn.LayerNorm(in_channels))
+                else:
+                    self.normalizations.append(nn.Identity())
+                self.lins.append(nn.Linear(in_channels, out_channels))
+            else:
+                if InputNorm:
+                    self.normalizations.append(nn.LayerNorm(in_channels))
+                else:
+                    self.normalizations.append(nn.Identity())
+                self.lins.append(nn.Linear(in_channels, hidden_channels))
+                self.normalizations.append(nn.LayerNorm(hidden_channels))
+                for _ in range(num_layers - 2):
+                    self.lins.append(
+                        nn.Linear(hidden_channels, hidden_channels))
+                    self.normalizations.append(nn.LayerNorm(hidden_channels))
+                self.lins.append(nn.Linear(hidden_channels, out_channels))
+        else:
+            if num_layers == 1:
+                # just linear layer i.e. logistic regression
+                self.normalizations.append(nn.Identity())
+                self.lins.append(nn.Linear(in_channels, out_channels))
+            else:
+                self.normalizations.append(nn.Identity())
+                self.lins.append(nn.Linear(in_channels, hidden_channels))
+                self.normalizations.append(nn.Identity())
+                for _ in range(num_layers - 2):
+                    self.lins.append(
+                        nn.Linear(hidden_channels, hidden_channels))
+                    self.normalizations.append(nn.Identity())
+                self.lins.append(nn.Linear(hidden_channels, out_channels))
+
+        self.dropout = dropout
+
+    def reset_parameters(self):
+        for lin in self.lins:
+            lin.reset_parameters()
+        for normalization in self.normalizations:
+            if not (normalization.__class__.__name__ == 'Identity'):
+                normalization.reset_parameters()
+
+    def forward(self, x):
+        x = self.normalizations[0](x)
+        for i, lin in enumerate(self.lins[:-1]):
+            x = lin(x)
+            x = F.relu(x, inplace=True)
+            x = self.normalizations[i+1](x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.lins[-1](x)
+        return x
+
+    def flops(self, x):
+        # Floating Point Operation Per Second
+        # caculates the complexity of MLP
+        num_samples = np.prod(x.shape[:-1])
+        flops = num_samples * self.in_channels # first normalization
+        flops += num_samples * self.in_channels * self.hidden_channels # first linear layer
+        flops += num_samples * self.hidden_channels # first relu layer
+
+        # flops for each layer
+        per_layer = num_samples * self.hidden_channels * self.hidden_channels
+        per_layer += num_samples * self.hidden_channels # relu + normalization
+        flops += per_layer * (len(self.lins) - 2)
+
+        flops += num_samples * self.out_channels * self.hidden_channels # last linear layer
+
+        return flops
+###### ------ ######
